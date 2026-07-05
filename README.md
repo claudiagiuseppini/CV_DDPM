@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Parameter-Efficient Few-Step Distillation of Diffusion Models via LoRA
 
 **Computer Vision (Prof. Irene Amerini) — Project 5: Lightweight Diffusion Models — Accelerating Training/Inference for Resource-Constrained Environments**
@@ -151,3 +152,6 @@ Benedetta Conti,
 Fabio Falconi
 
 Computer Vision, Sapienza University of Rome, 2026.
+=======
+# CV_DDPM
+>>>>>>> 0105fa7774570095000a247c99aac8329569a00f
