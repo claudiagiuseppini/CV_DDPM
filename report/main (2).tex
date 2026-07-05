@@ -1,0 +1,338 @@
+\documentclass[11pt]{article}
+
+% ---------- packages ----------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{siunitx}
+\usepackage[hidelinks]{hyperref}
+
+\captionsetup{font=small,labelfont=bf}
+\renewcommand{\arraystretch}{1.15}
+
+% ---------- title page ----------
+\begin{document}
+\begin{titlepage}
+\centering
+% If you add the logo file (sapienza-logo.png) it will be included automatically.
+\IfFileExists{sapienza-logo.png}{%
+  \includegraphics[width=0.32\textwidth]{sapienza-logo.png}\\[0.4cm]
+}{\vspace*{1.5cm}}
+
+{\scshape\large Dipartimento di Ingegneria Informatica, Automatica\\ e Gestionale\par}
+\vspace{2.5cm}
+
+{\huge\bfseries Parameter-Efficient Few-Step Distillation\\[0.2cm] of Diffusion Models via LoRA\par}
+\vspace{0.4cm}
+{\scshape\Large Computer Vision --- Project 5\par}
+\vspace{0.2cm}
+{\itshape\large Lightweight Diffusion Models for Resource-Constrained Environments\par}
+\vspace{2.5cm}
+
+\begin{minipage}{0.45\textwidth}
+\begin{flushleft}\large
+\textbf{Professor:}\\
+Irene Amerini
+\end{flushleft}
+\end{minipage}
+\begin{minipage}{0.45\textwidth}
+\begin{flushright}\large
+\textbf{Students:}\\
+Claudia Giuseppini --- 2069387\\
+Benedetta Conti --- 2045621\\
+Fabio Falconi --- 2048079
+\end{flushright}
+\end{minipage}
+
+\vfill
+\rule{\textwidth}{0.4pt}\\[0.2cm]
+{\large Academic Year 2025/2026\par}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+% ==================================================================
+\section{Introduction}
+% ==================================================================
+Denoising Diffusion Probabilistic Models (DDPMs)~\cite{ho2020ddpm} produce
+high-quality images, but their sampling procedure is an iterative Markov chain of
+hundreds to thousands of network evaluations, which makes inference slow and
+expensive. This is a critical limitation for deployment on edge devices or for
+training in resource-constrained environments.
+
+This project, following the Project~5 specification, implements a standard DDPM
+baseline on CIFAR-10 and integrates a methodological novelty aimed at accelerating
+sampling. We then rigorously evaluate the trade-off between computational efficiency
+(sampling time) and generation quality (FID, Inception Score) as well as sample
+diversity (Precision/Recall).
+
+Deterministic samplers such as DDIM~\cite{song2021ddim} reduce the number of steps,
+but quality collapses once the step count becomes very small. The root cause is the
+\emph{accumulated discretization error} along the reverse trajectory, not a failure
+of noise prediction at individual timesteps. Our contribution directly targets this
+error while keeping the adaptation cheap:
+
+\begin{quote}
+\textbf{Parameter-efficient few-step distillation via LoRA.} We freeze the trained
+DDPM (the \emph{teacher}) and train only low-rank adapters~\cite{hu2021lora} injected
+into the attention layers (the \emph{student}) with a progressive-distillation-style
+trajectory-matching objective~\cite{salimans2022progressive}. The student learns to
+reproduce, in very few steps, what the teacher produces with many DDIM sub-steps.
+\end{quote}
+
+Because only the adapters are trained (a small fraction of the weights) and they can
+be merged into the base weights at inference, the method adds essentially no inference
+overhead while providing large speed-ups over the full-step baseline.
+
+% ==================================================================
+\section{Related Work and Identified Limitations}
+% ==================================================================
+\begin{itemize}
+  \item \textbf{DDPM}~\cite{ho2020ddpm} --- our baseline generative model.
+        \emph{Limitation:} very slow sampling ($T=1000$ sequential evaluations).
+  \item \textbf{DDIM}~\cite{song2021ddim} --- deterministic non-Markovian sampler
+        enabling fewer steps. \emph{Limitation:} quality collapses under aggressive
+        step reduction (in our measurements, FID rises from $\sim\!29$ at 100 steps to
+        $>\!100$ at 4 steps).
+  \item \textbf{Progressive Distillation}~\cite{salimans2022progressive} --- distils a
+        teacher into a student that halves the number of steps. \emph{Limitation:}
+        requires full-model fine-tuning at each stage, costly on constrained hardware.
+  \item \textbf{LoRA}~\cite{hu2021lora} --- low-rank adapters for parameter-efficient
+        adaptation.
+\end{itemize}
+
+Our novelty sits at the intersection: we bring progressive-distillation-style
+trajectory matching to diffusion \emph{but perform it with LoRA only}, addressing the
+cost limitation of distillation while attacking the discretization-error limitation of
+few-step DDIM.
+
+% ==================================================================
+\section{Method}
+% ==================================================================
+\subsection{Baseline DDPM}
+We use an attention U-Net (encoder--decoder with skip connections, GroupNorm,
+self-attention at low resolution, sinusoidal timestep embeddings). The forward
+diffusion process noises a clean image $x_0$ as
+\begin{equation}
+  x_t = \sqrt{\bar{\alpha}_t}\,x_0 + \sqrt{1-\bar{\alpha}_t}\,\varepsilon,
+  \qquad \varepsilon \sim \mathcal{N}(0, I),
+  \label{eq:forward}
+\end{equation}
+where $\bar{\alpha}_t = \prod_{s=1}^{t}(1-\beta_s)$ follows a linear $\beta$-schedule
+with $T=1000$. The network $\varepsilon_\theta$ is trained with the standard
+noise-prediction objective
+\begin{equation}
+  \mathcal{L}_{\mathrm{DDPM}} =
+  \mathbb{E}_{x_0,\,t,\,\varepsilon}
+  \big\| \varepsilon - \varepsilon_\theta(x_t, t) \big\|_2^2 ,
+  \label{eq:ddpm-loss}
+\end{equation}
+using an exponential moving average (EMA) of the weights and mixed precision (AMP).
+
+\subsection{Fast Sampling (DDIM)}
+Deterministic DDIM ($\eta=0$) advances from timestep $t$ to $t'$ via
+\begin{equation}
+  \hat{x}_0 = \frac{x_t - \sqrt{1-\bar{\alpha}_t}\,\varepsilon_\theta(x_t,t)}
+                   {\sqrt{\bar{\alpha}_t}},
+  \qquad
+  x_{t'} = \sqrt{\bar{\alpha}_{t'}}\,\hat{x}_0
+           + \sqrt{1-\bar{\alpha}_{t'}}\,\varepsilon_\theta(x_t,t).
+  \label{eq:ddim}
+\end{equation}
+Reducing the number of visited timesteps accelerates sampling but increases the
+discretization error between consecutive $x_{t'}$ estimates.
+
+\subsection{Novelty: LoRA Few-Step Distillation}
+The trained baseline (EMA weights) is the frozen \emph{teacher} $\varepsilon_\phi$.
+The \emph{student} $\varepsilon_\theta$ is the same network with LoRA adapters injected
+into the attention projections; only the adapters are trainable.
+
+For a target step budget $K$ we build a short schedule and, for a randomly sampled
+interval $(t \rightarrow t')$, we forward-diffuse a real image to $x_t$ via
+Eq.~\eqref{eq:forward}. The teacher refines $x_t$ from $t$ to $t'$ using
+$m$ small DDIM sub-steps (Eq.~\eqref{eq:ddim}), producing the target
+$x_{t'}^{\text{teacher}}$; the student must reach the same point in a
+\emph{single} DDIM step, producing $x_{t'}^{\text{student}}$. The objective is a
+trajectory-matching loss with an auxiliary noise-consistency term:
+\begin{equation}
+  \mathcal{L}_{\mathrm{distill}} =
+  \big\| x_{t'}^{\text{student}} - x_{t'}^{\text{teacher}} \big\|_2^2
+  \;+\; \lambda\,
+  \big\| \varepsilon_\theta(x_t,t) - \varepsilon_\phi(x_t,t) \big\|_2^2 .
+  \label{eq:distill}
+\end{equation}
+With $m=2$ this reduces to canonical progressive distillation. We train one student per
+target $K \in \{8,4,2,1\}$. At inference the adapters can be merged into the base
+weights, so the distilled model costs the same as the base model at the same $K$.
+
+% ==================================================================
+\section{Experimental Setup}
+% ==================================================================
+\begin{itemize}
+  \item \textbf{Data:} CIFAR-10 ($32\times32$ RGB); metrics computed against the
+        CIFAR-10 test split via \texttt{torch-fidelity}.
+  \item \textbf{Model:} U-Net with \texttt{base\_channels}$=64$,
+        \texttt{time\_dim}$=256$ (single-GPU scale).
+  \item \textbf{Training:} 80 epochs, batch size 128, AdamW, EMA, AMP.
+  \item \textbf{Distillation:} 10 epochs per student, LoRA on the attention projections
+        (rank 4 by default; ranks 2 and 8 for the ablation).
+  \item \textbf{Metrics:} FID, KID, Inception Score (fidelity); Precision/Recall
+        (diversity)~\cite{kynkaanniemi2019precision}; seconds per image (speed).
+        All computed on \num{10000} generated images from a shared, seeded noise bank.
+  \item \textbf{Reproducibility:} fixed seed (42), deterministic algorithms, seeded
+        \texttt{torch.Generator}, pinned package versions.
+\end{itemize}
+
+% ==================================================================
+\section{Results}
+% ==================================================================
+\subsection{Baseline: quality and speed vs.\ number of steps}
+Table~\ref{tab:steps} reports the baseline across step budgets. Fewer steps means
+faster but lower-quality sampling; crucially, \textbf{recall (diversity) collapses}
+long before precision does.
+
+\begin{table}[H]
+\centering
+\caption{Baseline: DDIM at different step counts (FID on \num{10000} images).
+The DDPM row uses \num{1000} images and is reported only for speed-up factors.}
+\label{tab:steps}
+\begin{tabular}{llrrrrrr}
+\toprule
+Sampler & Steps & FID $\downarrow$ & IS $\uparrow$ & Precision & Recall & s/img & Speed-up$^\dagger$ \\
+\midrule
+DDPM (ref) & 1000 & 67.3$^{*}$ & 6.26 & 0.847 & 0.381 & 0.678 & $1\times$ \\
+DDIM & 100 & 29.33 & 7.23 & 0.751 & 0.326 & 0.053 & $12.8\times$ \\
+DDIM & 50  & 29.79 & 7.32 & 0.777 & 0.306 & 0.027 & $25.2\times$ \\
+DDIM & 20  & 32.43 & 7.32 & 0.834 & 0.243 & 0.011 & $60.5\times$ \\
+DDIM & 10  & 40.89 & 7.02 & 0.893 & 0.141 & 0.006 & $112.9\times$ \\
+DDIM & 8   & 47.12 & 6.83 & 0.903 & 0.102 & 0.005 & $136.5\times$ \\
+DDIM & 4   & 103.28 & 5.29 & 0.853 & 0.015 & 0.003 & $242.4\times$ \\
+DDIM & 2   & 188.84 & 3.73 & 0.401 & 0.001 & 0.002 & $\sim\!360\times$ \\
+DDIM & 1   & 325.11 & 1.56 & 0.005 & 0.000 & 0.001 & $\sim\!510\times$ \\
+\bottomrule
+\end{tabular}
+
+\vspace{2pt}
+{\footnotesize $^\dagger$ vs.\ DDPM-1000. \quad $^{*}$ On \num{1000} images (noisier).}
+\end{table}
+
+\paragraph{Fidelity vs.\ Diversity.} As steps drop from 100 to 8, precision actually
+\emph{rises} ($0.75\!\rightarrow\!0.90$) while recall \emph{collapses}
+($0.33\!\rightarrow\!0.10$, and to $\sim\!0$ at 4 steps and below). Few-step sampling
+does not primarily degrade individual samples --- it shrinks the portion of the data
+distribution the model covers. FID alone would hide this; Precision/Recall makes it
+explicit.
+
+\subsection{Novelty: matched-step comparison}
+Table~\ref{tab:paired} compares plain DDIM-$K$ against the distilled LoRA-$K$ at the
+same step budget, same initial noise, and same base weights --- so the only difference
+is the LoRA adapter.
+
+\begin{table}[H]
+\centering
+\caption{Matched step budget $K$: plain DDIM vs.\ distilled LoRA.}
+\label{tab:paired}
+\begin{tabular}{crrrrrc}
+\toprule
+$K$ & DDIM FID & Distilled FID & $\Delta$FID & DDIM Recall & Distilled Recall & Time ratio \\
+\midrule
+8 & 47.12  & \textbf{38.24} & \textbf{+8.9}  & 0.102 & 0.159 & $1.01\times$ \\
+4 & 103.28 & \textbf{68.34} & \textbf{+34.9} & 0.015 & 0.051 & $1.00\times$ \\
+2 & 188.84 & \textbf{159.12}& \textbf{+29.7} & 0.001 & 0.002 & $1.01\times$ \\
+1 & 325.11 & 326.57 & $-1.5$ & 0.000 & 0.000 & $1.00\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The distilled student improves FID at $K=8,4,2$, with the largest gain at
+\textbf{$K=4$ ($+34.9$)}, and partially \textbf{restores diversity} (recall $+0.057$ at
+$K=8$). At $K=1$ both models fail. Inference cost is unchanged (time ratio $\approx 1$):
+the distilled $K=8$ model is $\sim\!10.6\times$ faster than DDIM-100 and the $K=4$ model
+$\sim\!18.9\times$ faster, at a fraction of the quality loss of plain DDIM at the same
+step count.
+
+\subsection{Ablation 1 (causal): distillation objective vs.\ naive eps-loss}
+To prove the gain stems from the distillation \emph{objective} and not from the added
+LoRA capacity, we train an identical LoRA (same rank, same trainable parameters) with
+the standard noise-prediction loss (Eq.~\eqref{eq:ddpm-loss}) at low steps.
+
+\begin{table}[H]
+\centering
+\caption{Causal control: naive eps-loss LoRA vs.\ distillation, matched $K$ and rank.}
+\label{tab:causal}
+\begin{tabular}{crr}
+\toprule
+$K$ & Naive-eps LoRA $\Delta$FID & Distillation $\Delta$FID \\
+\midrule
+8 & $+0.96$ & \textbf{+8.9} \\
+4 & $-3.51$ (worse) & \textbf{+34.9} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The naive control yields $\approx\!0$ improvement at $K=8$ and is \emph{worse} than
+plain DDIM at $K=4$, while distillation yields large gains. This isolates the
+trajectory-matching objective as the direct cause of the improvement.
+
+\subsection{Ablation 2: LoRA rank ($K=8$)}
+FID: $r{=}2$: $38.32$, $r{=}4$: $38.48$, $r{=}8$: $37.67$. Rank barely matters --- even
+rank~2 captures almost all of the benefit, reinforcing the parameter-efficient claim.
+
+\subsection{Ablation 3: distillation state source ($K=8$)}
+Forward-diffused states only: $38.48$; mixing teacher-trajectory states ($p=0.5$):
+$38.24$ --- essentially tied. Conditioning on generated trajectory states does
+\emph{not} help; forward-diffusion states are sufficient. We report this as a negative
+result and do not rely on trajectory-state mixing in the final method.
+
+% ==================================================================
+\section{Limitations}
+% ==================================================================
+\begin{itemize}
+  \item \textbf{Weak absolute baseline.} Under the single-GPU budget the baseline
+        reaches FID $\approx 29$; samples show global structure but limited detail.
+        Because all comparisons are relative to the same teacher, the conclusions about
+        the novelty hold regardless of absolute quality.
+  \item \textbf{Breakdown at $K=1$.} The method does not recover single-step sampling on
+        this baseline.
+  \item \textbf{FID sample-size sensitivity.} We evaluate all headline comparisons at a
+        fixed \num{10000} images. The $K=4$ result ($+34.9$) is well beyond this noise;
+        the $K=8$ result ($+8.9$) is smaller and would benefit from multiple seeds.
+  \item \textbf{Linear $\beta$-schedule.} A cosine schedule could improve baseline
+        quality and is left as future work.
+\end{itemize}
+
+% ==================================================================
+\section{Conclusion}
+% ==================================================================
+We presented a parameter-efficient few-step distillation of a DDPM using LoRA adapters
+and a trajectory-matching objective. On CIFAR-10 the method improves few-step generation
+quality at a matched step budget (up to $+34.9$ FID at 4 steps), partially restores the
+diversity lost by aggressive step reduction, and adds no inference overhead, yielding
+$\sim\!10$--$19\times$ speed-ups over the DDIM-100 baseline (over $100\times$ vs.\ full
+DDPM). A naive-eps control confirms that the distillation objective --- not the extra
+parameters --- is responsible for the gain. Future work includes a cosine schedule,
+min-SNR-weighted distillation, and rank scaling for the extreme $K=2/1$ regime.
+
+% ==================================================================
+\begin{thebibliography}{9}
+\bibitem{ho2020ddpm} J.~Ho, A.~Jain, P.~Abbeel.
+  \emph{Denoising Diffusion Probabilistic Models.} NeurIPS 2020.
+\bibitem{song2021ddim} J.~Song, C.~Meng, S.~Ermon.
+  \emph{Denoising Diffusion Implicit Models.} ICLR 2021.
+\bibitem{salimans2022progressive} T.~Salimans, J.~Ho.
+  \emph{Progressive Distillation for Fast Sampling of Diffusion Models.} ICLR 2022.
+\bibitem{hu2021lora} E.~Hu, Y.~Shen, P.~Wallis, et al.
+  \emph{LoRA: Low-Rank Adaptation of Large Language Models.} 2021.
+\bibitem{kynkaanniemi2019precision} T.~Kynk\"a\"anniemi, T.~Karras, S.~Laine,
+  J.~Lehtinen, T.~Aila. \emph{Improved Precision and Recall Metric for Assessing
+  Generative Models.} NeurIPS 2019.
+\end{thebibliography}
+
+\end{document}
