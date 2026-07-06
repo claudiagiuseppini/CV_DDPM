@@ -1,0 +1,132 @@
+{
+  "run_profile": "strong_10k",
+  "seed": 42,
+  "eval_seed": 123,
+  "device": "cuda",
+  "image_size": 32,
+  "T": 1000,
+  "beta_start": 0.0001,
+  "beta_end": 0.02,
+  "epochs": 80,
+  "batch_size": 128,
+  "base_channels": 64,
+  "time_dim": 256,
+  "channel_mults": [
+    1,
+    2,
+    2,
+    4
+  ],
+  "attention_resolutions": [
+    8
+  ],
+  "use_ema": true,
+  "ema_decay": 0.9999,
+  "distill_epochs": 10,
+  "max_distill_batches_per_epoch": null,
+  "teacher_trajectory_steps": 10,
+  "fid_num_images_final": 10000,
+  "fid_batch_size": 128,
+  "base_step_grid": [
+    100,
+    50,
+    20,
+    10,
+    8,
+    4,
+    2,
+    1
+  ],
+  "distill_experiments": [
+    {
+      "name": "LoRA-distill-forward-r4-K8",
+      "student_steps": 8,
+      "rank": 4,
+      "alpha": 4.0,
+      "mix_prob": 0.0,
+      "teacher_substeps": 2,
+      "loss_type": "distill",
+      "role": "main_K8_forward"
+    },
+    {
+      "name": "LoRA-distill-mixed-r4-K8",
+      "student_steps": 8,
+      "rank": 4,
+      "alpha": 4.0,
+      "mix_prob": 0.5,
+      "teacher_substeps": 2,
+      "loss_type": "distill",
+      "role": "state_ablation_K8"
+    },
+    {
+      "name": "LoRA-distill-mixed-r4-K4",
+      "student_steps": 4,
+      "rank": 4,
+      "alpha": 4.0,
+      "mix_prob": 0.5,
+      "teacher_substeps": 2,
+      "loss_type": "distill",
+      "role": "main_K4_extreme"
+    },
+    {
+      "name": "LoRA-distill-mixed-r4-K2",
+      "student_steps": 2,
+      "rank": 4,
+      "alpha": 4.0,
+      "mix_prob": 0.5,
+      "teacher_substeps": 2,
+      "loss_type": "distill",
+      "role": "extreme_K2"
+    },
+    {
+      "name": "LoRA-distill-mixed-r4-K1",
+      "student_steps": 1,
+      "rank": 4,
+      "alpha": 4.0,
+      "mix_prob": 0.5,
+      "teacher_substeps": 2,
+      "loss_type": "distill",
+      "role": "extreme_K1"
+    },
+    {
+      "name": "LoRA-naive-eps-r4-K8",
+      "student_steps": 8,
+      "rank": 4,
+      "alpha": 4.0,
+      "mix_prob": 0.0,
+      "teacher_substeps": 0,
+      "loss_type": "naive_eps",
+      "role": "naive_control_K8"
+    },
+    {
+      "name": "LoRA-naive-eps-r4-K4",
+      "student_steps": 4,
+      "rank": 4,
+      "alpha": 4.0,
+      "mix_prob": 0.0,
+      "teacher_substeps": 0,
+      "loss_type": "naive_eps",
+      "role": "naive_control_K4"
+    },
+    {
+      "name": "LoRA-distill-forward-r2-K8",
+      "student_steps": 8,
+      "rank": 2,
+      "alpha": 2.0,
+      "mix_prob": 0.0,
+      "teacher_substeps": 2,
+      "loss_type": "distill",
+      "role": "rank_ablation_r2_K8"
+    },
+    {
+      "name": "LoRA-distill-forward-r8-K8",
+      "student_steps": 8,
+      "rank": 8,
+      "alpha": 8.0,
+      "mix_prob": 0.0,
+      "teacher_substeps": 2,
+      "loss_type": "distill",
+      "role": "rank_ablation_r8_K8"
+    }
+  ]
+}
