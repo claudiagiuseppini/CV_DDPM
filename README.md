@@ -1,6 +1,6 @@
-# Parameter-Efficient Few-Step Distillation of Diffusion Models via LoRA
+# Lightweight Diffusion Models — Accelerating Training/Inference for Resource-Constrained Environments
 
-**Computer Vision (Prof. Irene Amerini) — Project 5: Lightweight Diffusion Models — Accelerating Training/Inference for Resource-Constrained Environments**
+**Computer Vision — Project 5**
 
 ---
 
